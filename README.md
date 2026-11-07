@@ -39,11 +39,9 @@ flowchart LR
     T --> E["Separate test evaluation"]
 ```
 
-The augmentation settings are deliberately modest. They are a design choice for this project; the repository does not include an ablation showing that they outperform alternative settings.
+The project uses modest augmentation settings; their effect has not been evaluated in an ablation study.
 
 ## Reported Results
-
-The original README contained both validation tables and separate test summaries. They are separated below to avoid treating them as the same evaluation.
 
 ### Validation
 
@@ -64,7 +62,7 @@ The original report describes 300 validation images, with 150 images per class.
 
 The project score is `0.8 × mAP50–95 + 0.1 × precision + 0.1 × recall`; it is a project-specific summary, not a standard detection metric. A complete Seed 2 test summary was not provided in the original README.
 
-These are historical reported values. Original logs, data, and checkpoints are not included, so their provenance cannot be audited here. The earlier implementation did not forward the requested seed to the Ultralytics trainer. Those historical run labels should not be taken as verified independent trainer seeds. The current implementation forwards the trainer seed and records both trainer and split seeds.
+These values come from the original report; logs, data, and checkpoints are not included. The original implementation did not forward the requested seed to the trainer, so the seed labels do not establish independent seeded runs. The current code forwards and records both the training and split seeds.
 
 ## Data Layout
 
@@ -93,6 +91,8 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
+To run the regression tests, install `pytest` and run `python -m pytest`. Tests use synthetic images and mocked YOLO calls.
+
 ### Train
 
 ```bash
@@ -118,7 +118,7 @@ outputs/test_<timestamp>/test_metrics.json
 outputs/test_<timestamp>/run_config.json
 ```
 
-Each invocation creates an independent run directory containing its converted dataset and configuration. `--run-dir` can specify a directory explicitly; nonempty directories are rejected and never deleted. Test evaluation explicitly uses `split="test"` and confidence threshold 0.001 for the precision–recall sweep. The earlier report used different evaluation settings; its historical scores are retained unchanged, not presented as rerun results.
+Each invocation saves its converted dataset, configuration, and results in a separate run directory. Use `--run-dir` to choose a directory; existing nonempty directories are rejected. Evaluation uses `split="test"` and a confidence threshold of 0.001. These settings differ from the original report, whose scores have not been rerun.
 
 ## Repository Guide
 
@@ -131,7 +131,3 @@ Each invocation creates an independent run directory containing its converted da
 ## Limitations
 
 This is a two-class course project on a specific thermal dataset. Performance on other sensors or environments has not been established. The reported validation and test scores describe different splits and should not be compared as interchangeable results.
-
-
-
-Regression checks use synthetic images and mocked YOLO calls: install `pytest`, then run `python -m pytest`. Full model training requires the private dataset and appropriate compute.
