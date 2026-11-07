@@ -1,26 +1,23 @@
-import os, json, shutil, argparse, random
+"""Prepare COCO thermal data, train YOLO, and evaluate a held-out test set."""
+from __future__ import annotations
+
+import argparse
+import json
+import random
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+
 import cv2
 import numpy as np
-import pandas as pd
 import torch
-from ultralytics import YOLO
 from sklearn.model_selection import train_test_split
+from ultralytics import YOLO
+
+CLASS_NAMES = ("normal", "anomaly")
 
 
-WORKSPACE = "/data/workspace"
-
-TRAIN_IMG_ROOT = f"{WORKSPACE}/images/train"
-TEST_IMG_ROOT  = f"{WORKSPACE}/images/test"
-
-TRAIN_JSON = f"{WORKSPACE}/train.json"
-TEST_JSON  = f"{WORKSPACE}/test.json"
-
-TRAINSET_ROOT = f"{WORKSPACE}/yolo_dataset_train"
-TESTSET_ROOT  = f"{WORKSPACE}/yolo_dataset_test"
-PRED_ROOT     = f"{WORKSPACE}/yolo_test_predictions"
-
-
-def set_seed(seed: int):
+def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -31,224 +28,153 @@ def set_seed(seed: int):
 
 def imread_unicode(path, flags=cv2.IMREAD_COLOR):
     data = np.fromfile(path, dtype=np.uint8)
-    if data.size == 0:
-        return None
-    return cv2.imdecode(data, flags)
+    return cv2.imdecode(data, flags) if data.size else None
 
 
 def build_ann_map(json_path):
-    data = json.load(open(json_path, "r"))
-    images = data["images"]
-    anns = data["annotations"]
-    categories = data["categories"]
-
-    cat_id_map = {c["id"]: i for i, c in enumerate(categories)}
-
-    ann_map = {}
-    for ann in anns:
-        ann_map.setdefault(ann["image_id"], []).append({
-            "bbox": ann["bbox"],
-            "cls": cat_id_map[ann["category_id"]]
+    with Path(json_path).open(encoding="utf-8") as source:
+        data = json.load(source)
+    category_map = {}
+    for category in data["categories"]:
+        name = str(category["name"]).strip().lower()
+        if name not in CLASS_NAMES:
+            raise ValueError(f"Unsupported category {name!r}; expected {CLASS_NAMES}.")
+        category_map[category["id"]] = CLASS_NAMES.index(name)
+    if set(category_map.values()) != {0, 1}:
+        raise ValueError("Both normal and anomaly categories must be declared.")
+    annotations = {}
+    for annotation in data["annotations"]:
+        annotations.setdefault(annotation["image_id"], []).append({
+            "bbox": annotation["bbox"], "cls": category_map[annotation["category_id"]]
         })
-
-    return images, ann_map
-
-
-def convert_train_json_to_yolo(json_path, img_root, save_root, split_ratio=0.9):
-    images, ann_map = build_ann_map(json_path)
-    real_files = set(os.listdir(img_root))
-
-    imgs, image_level_labels = [], []
-    for img in images:
-        fname = img["file_name"].strip()
-        if fname in real_files:
-            imgs.append(img)
-            cls_list = [a["cls"] for a in ann_map.get(img["id"], [])]
-            image_level_labels.append(1 if 1 in cls_list else 0)
-
-    train_imgs, val_imgs = train_test_split(
-        imgs,
-        test_size=1 - split_ratio,
-        stratify=image_level_labels,
-        random_state=42
-    )
-
-    def save_item(img_item, split):
-        fname = img_item["file_name"].strip()
-        src = os.path.join(img_root, fname)
-        img = imread_unicode(src)
-        if img is None:
-            return
-
-        h, w = img.shape[:2]
-
-        img_dir = os.path.join(save_root, f"images/{split}")
-        lab_dir = os.path.join(save_root, f"labels/{split}")
-        os.makedirs(img_dir, exist_ok=True)
-        os.makedirs(lab_dir, exist_ok=True)
-
-        shutil.copy(src, os.path.join(img_dir, fname))
-
-        base, _ = os.path.splitext(fname)
-        with open(os.path.join(lab_dir, base + ".txt"), "w") as f:
-            for ann in ann_map.get(img_item["id"], []):
-                x, y, bw, bh = ann["bbox"]
-                cx = (x + bw / 2) / w
-                cy = (y + bh / 2) / h
-                nw = bw / w
-                nh = bh / h
-                f.write(f"{ann['cls']} {cx} {cy} {nw} {nh}\n")
-
-    for item in train_imgs:
-        save_item(item, "train")
-    for item in val_imgs:
-        save_item(item, "val")
+    return data["images"], annotations
 
 
-def convert_test_json_to_yolo(json_path, img_root, save_root):
-    images, ann_map = build_ann_map(json_path)
-    real_files = set(os.listdir(img_root))
+def write_yolo_items(images, annotations, image_root, output_root, split):
+    """Use one conversion path for both training and test annotations."""
+    image_root, output_root = Path(image_root), Path(output_root)
+    image_dest = output_root / "images" / split
+    label_dest = output_root / "labels" / split
+    image_dest.mkdir(parents=True, exist_ok=True)
+    label_dest.mkdir(parents=True, exist_ok=True)
+    seen = set()
+    for image in images:
+        relative = Path(str(image["file_name"]).strip())
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Image name must be relative to image_root: {relative}")
+        label_relative = relative.with_suffix(".txt")
+        if label_relative in seen:
+            raise ValueError(f"Duplicate label destination: {label_relative}")
+        seen.add(label_relative)
+        source = image_root / relative
+        image_data = imread_unicode(source)
+        if image_data is None:
+            raise ValueError(f"Cannot decode image: {source}")
+        height, width = image_data.shape[:2]
+        lines = []
+        for annotation in annotations.get(image["id"], []):
+            x, y, box_width, box_height = map(float, annotation["bbox"])
+            if not all(np.isfinite([x, y, box_width, box_height])) or box_width <= 0 or box_height <= 0:
+                raise ValueError(f"Invalid bounding box in {relative}: {annotation['bbox']}")
+            left, top = max(0.0, x), max(0.0, y)
+            right, bottom = min(float(width), x + box_width), min(float(height), y + box_height)
+            if right <= left or bottom <= top:
+                raise ValueError(f"Bounding box is outside image {relative}")
+            values = ((left + right) / (2 * width), (top + bottom) / (2 * height),
+                      (right - left) / width, (bottom - top) / height)
+            lines.append(f"{annotation['cls']} " + " ".join(map(str, values)))
+        (image_dest / relative).parent.mkdir(parents=True, exist_ok=True)
+        (label_dest / label_relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, image_dest / relative)
+        (label_dest / label_relative).write_text("\n".join(lines) + ("\n" if lines else ""))
 
-    for img in images:
-        fname = img["file_name"].strip()
-        if fname not in real_files:
-            continue
 
-        src = os.path.join(img_root, fname)
-        img_data = imread_unicode(src)
-        if img_data is None:
-            continue
-
-        h, w = img_data.shape[:2]
-
-        img_dir = os.path.join(save_root, "images/test")
-        lab_dir = os.path.join(save_root, "labels/test")
-        os.makedirs(img_dir, exist_ok=True)
-        os.makedirs(lab_dir, exist_ok=True)
-
-        shutil.copy(src, os.path.join(img_dir, fname))
-
-        base, _ = os.path.splitext(fname)
-        with open(os.path.join(lab_dir, base + ".txt"), "w") as f:
-            for ann in ann_map.get(img["id"], []):
-                x, y, bw, bh = ann["bbox"]
-                cx = (x + bw / 2) / w
-                cy = (y + bh / 2) / h
-                nw = bw / w
-                nh = bh / h
-                f.write(f"{ann['cls']} {cx} {cy} {nw} {nh}\n")
-
-
-def create_yaml(root, split):
-    if split == "train":
-        content = f"""
-train: {os.path.abspath(root + "/images/train")}
-val: {os.path.abspath(root + "/images/val")}
-nc: 2
-names: ["normal", "anomaly"]
-"""
+def create_yaml(root, test=False):
+    root = Path(root).resolve()
+    lines = [f"path: {json.dumps(str(root))}"]
+    if test:
+        lines += ["train: images/test", "val: images/test", "test: images/test"]
     else:
-        content = f"""
-path: {os.path.abspath(root)}
-train: images/test
-val: images/test
-test: images/test
-nc: 2
-names: ["normal", "anomaly"]
-"""
-    open(os.path.join(root, "data.yaml"), "w").write(content)
+        lines += ["train: images/train", "val: images/val"]
+    lines += ["nc: 2", 'names: ["normal", "anomaly"]']
+    path = root / "data.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
-def train_yolo(model_pt, epochs):
+def train_yolo(model_pt, epochs, data_yaml, run_dir, seed):
     model = YOLO(model_pt)
-    model.train(
-        data=os.path.join(TRAINSET_ROOT, "data.yaml"),
-        epochs=epochs,
-        imgsz=640,
-        batch=8,
-        optimizer="SGD",
-        lr0=0.0008,
-        momentum=0.95,
-        weight_decay=0.0005,
-        warmup_epochs=3,
-        mosaic=0.0,
-        mixup=0.0,
-        hsv_h=0.02,
-        hsv_s=0.03,
-        hsv_v=0.03,
-        translate=0.05,
-        scale=0.1,
-        fliplr=0.2,
-        flipud=0.05,
-        multi_scale=False
+    return model.train(
+        data=str(data_yaml), epochs=epochs, seed=seed, deterministic=True,
+        imgsz=640, batch=8, optimizer="SGD", lr0=0.0008,
+        momentum=0.95, weight_decay=0.0005, warmup_epochs=3,
+        mosaic=0.0, mixup=0.0, hsv_h=0.02, hsv_s=0.03, hsv_v=0.03,
+        translate=0.05, scale=0.1, fliplr=0.2, flipud=0.05, multi_scale=False,
+        project=str(run_dir), name="training", exist_ok=False,
     )
 
 
-def evaluate_test(weights):
+def evaluate_test(weights, data_yaml, run_dir):
     model = YOLO(weights)
     metrics = model.val(
-        data=os.path.join(TESTSET_ROOT, "data.yaml"),
-        imgsz=640,
-        conf=0.25,
-        device=0 if torch.cuda.is_available() else "cpu"
+        data=str(data_yaml), split="test", imgsz=640, conf=0.001,
+        device=0 if torch.cuda.is_available() else "cpu",
+        project=str(run_dir), name="test", exist_ok=False,
     )
+    result = {"mAP50-95": float(metrics.box.map), "Precision": float(metrics.box.mp),
+              "Recall": float(metrics.box.mr)}
+    result["FinalScore"] = .8 * result["mAP50-95"] + .1 * result["Precision"] + .1 * result["Recall"]
+    (Path(run_dir) / "test_metrics.json").write_text(json.dumps(result, indent=2) + "\n")
+    import csv
+    with (Path(run_dir) / "test_metrics.csv").open("w", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=list(result))
+        writer.writeheader()
+        writer.writerow(result)
+    return result
 
-    mAP = float(metrics.box.map)
-    precision = float(metrics.box.mp)
-    recall = float(metrics.box.mr)
 
-    final_score = mAP * 0.8 + precision * 0.1 + recall * 0.1
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", required=True, choices=["train", "test"])
+    parser.add_argument("--workspace", type=Path, default=Path("data/workspace"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--run-dir", type=Path, help="Must be absent or empty; existing results are never deleted.")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=0, help="YOLO trainer seed.")
+    parser.add_argument("--split-seed", type=int, default=42, help="Train/validation allocation seed.")
+    parser.add_argument("--weights")
+    parser.add_argument("--model", default="yolov8x.pt")
+    args = parser.parse_args(argv)
+    if args.mode == "test" and not args.weights:
+        parser.error("--weights is required in test mode")
+    if args.epochs < 1:
+        parser.error("--epochs must be positive")
+    return args
 
-    result = {
-        "mAP50-95": mAP,
-        "Precision": precision,
-        "Recall": recall,
-        "FinalScore": final_score
-    }
 
-    os.makedirs(PRED_ROOT, exist_ok=True)
-    pd.DataFrame([result]).to_csv(
-        os.path.join(PRED_ROOT, "test_metrics.csv"),
-        index=False
-    )
-
-    print("\n===== TEST RESULT =====")
-    print(f"mAP50–95 : {mAP}")
-    print(f"Precision: {precision}")
-    print(f"Recall   : {recall}")
-    print(f"Final Score: {final_score}")
-    print("=======================\n")
+def main(argv=None):
+    args = parse_args(argv)
+    set_seed(args.seed)
+    run_dir = args.run_dir or args.output_dir / (args.mode + "_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+    if run_dir.exists() and (not run_dir.is_dir() or any(run_dir.iterdir())):
+        raise FileExistsError(f"Refusing to overwrite existing run: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    config["run_dir"] = str(run_dir.resolve())
+    (run_dir / "run_config.json").write_text(json.dumps(config, indent=2) + "\n")
+    data_root = run_dir / "dataset"
+    if args.mode == "train":
+        images, annotations = build_ann_map(args.workspace / "train.json")
+        labels = [int(any(a["cls"] == 1 for a in annotations.get(image["id"], []))) for image in images]
+        train, val = train_test_split(images, test_size=.1, stratify=labels, random_state=args.split_seed)
+        for split, items in [("train", train), ("val", val)]:
+            write_yolo_items(items, annotations, args.workspace / "images/train", data_root, split)
+        train_yolo(args.model, args.epochs, create_yaml(data_root), run_dir, args.seed)
+    else:
+        images, annotations = build_ann_map(args.workspace / "test.json")
+        write_yolo_items(images, annotations, args.workspace / "images/test", data_root, "test")
+        print(json.dumps(evaluate_test(args.weights, create_yaml(data_root, test=True), run_dir), indent=2))
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", required=True, choices=["train", "test"])
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--weights", default=None)
-    parser.add_argument("--model", default="yolov8x.pt")
-    args = parser.parse_args()
-
-    set_seed(args.seed)
-
-    if args.mode == "train":
-        if os.path.exists(TRAINSET_ROOT):
-            shutil.rmtree(TRAINSET_ROOT)
-        os.makedirs(TRAINSET_ROOT)
-
-        convert_train_json_to_yolo(TRAIN_JSON, TRAIN_IMG_ROOT, TRAINSET_ROOT)
-        create_yaml(TRAINSET_ROOT, "train")
-        train_yolo(args.model, args.epochs)
-
-    else:
-        if not args.weights:
-            raise ValueError("--weights is required in test mode")
-
-        if os.path.exists(TESTSET_ROOT):
-            shutil.rmtree(TESTSET_ROOT)
-        os.makedirs(TESTSET_ROOT)
-
-        convert_test_json_to_yolo(TEST_JSON, TEST_IMG_ROOT, TESTSET_ROOT)
-        create_yaml(TESTSET_ROOT, "test")
-        evaluate_test(args.weights)
+    main()
