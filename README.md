@@ -6,7 +6,15 @@ A YOLOv8x pipeline for detecting normal and anomalous regions in thermal images.
 
 Course project for **ITE4052 Computer Vision, Hanyang University ERICA**, Sep–Dec 2025.
 
-[Pipeline implementation](main.py) · [Dependencies](requirements.txt)
+[Results](#reported-results) · [Pipeline](#pipeline) · [Run](#getting-started) · [Implementation](main.py)
+
+## Result Snapshot
+
+| Reported test run | mAP50–95 | Precision | Recall |
+| :--- | ---: | ---: | ---: |
+| Seed 0 | **0.7942** | 0.9687 | 0.6809 |
+
+Historical result from the original project report. [Evaluation details and other runs](#reported-results).
 
 ## Overview
 
@@ -26,12 +34,9 @@ The project converts COCO annotations into YOLO labels, fine-tunes a detector, a
 
 ```mermaid
 flowchart LR
-    D["Thermal images + COCO annotations"] --> C["Convert boxes to YOLO labels"]
-    C --> S["Training / validation split"]
-    S --> T["Fine-tune YOLOv8x"]
-    T --> W["Trained checkpoint"]
-    W --> E["Separate test images and annotations"]
-    E --> R["Metrics CSV"]
+    D["Images + COCO labels"] --> P["YOLO conversion + split"]
+    P --> T["Fine-tune YOLOv8x"]
+    T --> E["Separate test evaluation"]
 ```
 
 The augmentation settings are deliberately modest. They are a design choice for this project; the repository does not include an ablation showing that they outperform alternative settings.
@@ -123,4 +128,5 @@ Each invocation replaces that summary file. Save a copy elsewhere if comparing m
 ## Limitations
 
 This is a two-class course project on a specific thermal dataset. Performance on other sensors or environments has not been established. The reported validation and test scores describe different splits and should not be compared as interchangeable results.
+
 
