@@ -58,3 +58,41 @@ def test_existing_run_is_not_deleted(tmp_path):
     with pytest.raises(FileExistsError):
         pipeline.main(["--mode", "train", "--run-dir", str(tmp_path)])
     assert marker.read_text() == "original"
+
+
+@pytest.mark.parametrize("case,message", [
+    ("duplicate_image_id", "Duplicate image id"),
+    ("duplicate_image_file", "Duplicate image file"),
+    ("duplicate_category_id", "Duplicate category id"),
+    ("unknown_image", "unknown image id"),
+    ("unknown_category", "unknown category id"),
+])
+def test_invalid_coco_identity_is_rejected_before_splitting(tmp_path, case, message):
+    data = coco([{"id": 10, "name": "normal"}, {"id": 20, "name": "anomaly"}])
+    if case == "duplicate_image_id":
+        data["images"].append({"id": 1, "file_name": "other.png"})
+    elif case == "duplicate_image_file":
+        data["images"].append({"id": 2, "file_name": " nested/./sample.png "})
+    elif case == "duplicate_category_id":
+        data["categories"].append({"id": 20, "name": "anomaly"})
+    elif case == "unknown_image":
+        data["annotations"][0]["image_id"] = 999
+    else:
+        data["annotations"][0]["category_id"] = 999
+    path = tmp_path / "input.json"
+    original = json.dumps(data)
+    path.write_text(original)
+    with pytest.raises(ValueError, match=message):
+        pipeline.build_ann_map(path)
+    assert path.read_text() == original
+
+
+def test_distinct_images_and_unannotated_background_are_preserved(tmp_path):
+    data = coco([{"id": 10, "name": "normal"}, {"id": 20, "name": "anomaly"}])
+    data["images"].append({"id": 2, "file_name": "other/sample.png"})
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(data))
+    images, annotations = pipeline.build_ann_map(path)
+    assert images == data["images"]
+    assert annotations == {1: [{"bbox": [0, 0, 5, 5], "cls": 1}]}
+    assert annotations.get(2, []) == []

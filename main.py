@@ -36,14 +36,29 @@ def build_ann_map(json_path):
         data = json.load(source)
     category_map = {}
     for category in data["categories"]:
+        if category["id"] in category_map:
+            raise ValueError(f"Duplicate category id: {category['id']}")
         name = str(category["name"]).strip().lower()
         if name not in CLASS_NAMES:
             raise ValueError(f"Unsupported category {name!r}; expected {CLASS_NAMES}.")
         category_map[category["id"]] = CLASS_NAMES.index(name)
     if set(category_map.values()) != {0, 1}:
         raise ValueError("Both normal and anomaly categories must be declared.")
+    image_ids, image_paths = set(), set()
+    for image in data["images"]:
+        if image["id"] in image_ids:
+            raise ValueError(f"Duplicate image id: {image['id']}")
+        relative = Path(str(image["file_name"]).strip())
+        if relative in image_paths:
+            raise ValueError(f"Duplicate image file: {relative}")
+        image_ids.add(image["id"])
+        image_paths.add(relative)
     annotations = {}
     for annotation in data["annotations"]:
+        if annotation["image_id"] not in image_ids:
+            raise ValueError(f"Annotation references unknown image id: {annotation['image_id']}")
+        if annotation["category_id"] not in category_map:
+            raise ValueError(f"Annotation references unknown category id: {annotation['category_id']}")
         annotations.setdefault(annotation["image_id"], []).append({
             "bbox": annotation["bbox"], "cls": category_map[annotation["category_id"]]
         })
