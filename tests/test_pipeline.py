@@ -96,3 +96,45 @@ def test_distinct_images_and_unannotated_background_are_preserved(tmp_path):
     assert images == data["images"]
     assert annotations == {1: [{"bbox": [0, 0, 5, 5], "cls": 1}]}
     assert annotations.get(2, []) == []
+
+
+def conversion_input(tmp_path, bbox):
+    source = tmp_path / "source"
+    source.mkdir()
+    cv2.imwrite(str(source / "sample.png"), np.zeros((10, 20, 3), np.uint8))
+    images = [{"id": 1, "file_name": "sample.png"}]
+    annotations = {1: [{"bbox": bbox, "cls": 1}]}
+    return source, images, annotations
+
+
+@pytest.mark.parametrize("bbox", ["1234", {"x": 0, "y": 0, "w": 5, "h": 5}, None,
+                                  [0, 0, 5], [0, 0, 5, 5, 1], [0, 0, "bad", 5],
+                                  [0, 0, 0, 5], [0, 0, -1, 5], [0, 0, 5, float("nan")],
+                                  [0, 0, float("inf"), 5], [25, 0, 5, 5]])
+def test_invalid_boxes_do_not_produce_image_or_label_files(tmp_path, bbox):
+    source, images, annotations = conversion_input(tmp_path, bbox)
+    with pytest.raises(ValueError, match="bounding box|Bounding box"):
+        pipeline.write_yolo_items(images, annotations, source, tmp_path / "out", "test")
+    assert not list((tmp_path / "out").rglob("*.txt"))
+    assert not list((tmp_path / "out").rglob("*.png"))
+
+
+@pytest.mark.parametrize("bbox,expected", [
+    ([-5, -2, 15, 10], [.25, .4, .5, .8]),
+    ([15, 7, 10, 5], [.875, .85, .25, .3]),
+    ([0, 0, 20, 10], [.5, .5, 1, 1]),
+])
+def test_clipped_boxes_have_correct_yolo_coordinates(tmp_path, bbox, expected):
+    source, images, annotations = conversion_input(tmp_path, bbox)
+    pipeline.write_yolo_items(images, annotations, source, tmp_path / "out", "test")
+    values = (tmp_path / "out/labels/test/sample.txt").read_text().split()
+    assert values[0] == "1"
+    assert list(map(float, values[1:])) == pytest.approx(expected)
+
+
+def test_label_collisions_are_rejected_before_any_copy(tmp_path):
+    source, images, annotations = conversion_input(tmp_path, [0, 0, 5, 5])
+    images.append({"id": 2, "file_name": "sample.jpg"})
+    with pytest.raises(ValueError, match="Duplicate label destination"):
+        pipeline.write_yolo_items(images, annotations, source, tmp_path / "out", "test")
+    assert not (tmp_path / "out").exists()

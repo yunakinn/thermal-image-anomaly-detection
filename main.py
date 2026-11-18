@@ -70,8 +70,7 @@ def write_yolo_items(images, annotations, image_root, output_root, split):
     image_root, output_root = Path(image_root), Path(output_root)
     image_dest = output_root / "images" / split
     label_dest = output_root / "labels" / split
-    image_dest.mkdir(parents=True, exist_ok=True)
-    label_dest.mkdir(parents=True, exist_ok=True)
+    prepared = []
     seen = set()
     for image in images:
         relative = Path(str(image["file_name"]).strip())
@@ -81,6 +80,12 @@ def write_yolo_items(images, annotations, image_root, output_root, split):
         if label_relative in seen:
             raise ValueError(f"Duplicate label destination: {label_relative}")
         seen.add(label_relative)
+        prepared.append((image, relative, label_relative))
+
+    # Detect naming collisions across the split before writing any output.
+    image_dest.mkdir(parents=True, exist_ok=True)
+    label_dest.mkdir(parents=True, exist_ok=True)
+    for image, relative, label_relative in prepared:
         source = image_root / relative
         image_data = imread_unicode(source)
         if image_data is None:
@@ -88,7 +93,13 @@ def write_yolo_items(images, annotations, image_root, output_root, split):
         height, width = image_data.shape[:2]
         lines = []
         for annotation in annotations.get(image["id"], []):
-            x, y, box_width, box_height = map(float, annotation["bbox"])
+            bbox = annotation["bbox"]
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                raise ValueError(f"Invalid bounding box in {relative}: {bbox}")
+            try:
+                x, y, box_width, box_height = map(float, bbox)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"Invalid bounding box in {relative}: {bbox}") from exc
             if not all(np.isfinite([x, y, box_width, box_height])) or box_width <= 0 or box_height <= 0:
                 raise ValueError(f"Invalid bounding box in {relative}: {annotation['bbox']}")
             left, top = max(0.0, x), max(0.0, y)
