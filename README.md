@@ -14,7 +14,7 @@ Course project for **ITE4052 Computer Vision, Hanyang University ERICA**, Sep–
 | :--- | ---: | ---: | ---: |
 | Seed 0 | **0.7942** | 0.9687 | 0.6809 |
 
-Historical result from the original project report. [Evaluation details and other runs](#reported-results).
+From the course project report (December 2025). [Evaluation details and other runs](#reported-results).
 
 ## Overview
 
@@ -45,7 +45,7 @@ The project uses modest augmentation settings; their effect has not been evaluat
 
 ### Validation
 
-The original report describes 300 validation images, with 150 images per class.
+The validation set has 300 images, 150 per class.
 
 | Reported run | Overall mAP50 | Overall mAP50–95 |
 | :--- | ---: | ---: |
@@ -60,9 +60,9 @@ The original report describes 300 validation images, with 150 images per class.
 | Seed 0 | 0.7942 | 0.9687 | 0.6809 | 0.8003 |
 | Seed 1 | 0.7929 | 0.9616 | 0.6776 | 0.7982 |
 
-The project score is `0.8 × mAP50–95 + 0.1 × precision + 0.1 × recall`; it is a project-specific summary, not a standard detection metric. A complete Seed 2 test summary was not provided in the original README.
+The project score is `0.8 × mAP50–95 + 0.1 × precision + 0.1 × recall`; it is a project-specific summary, not a standard detection metric. The test summary for Seed 2 is not available.
 
-These values come from the original report; logs, data, and checkpoints are not included. The original implementation did not forward the requested seed to the trainer, so the seed labels do not establish independent seeded runs. The current code forwards and records both the training and split seeds.
+These results are from the course project report; training logs, data, and checkpoints are not included. In that version the seed was not passed to the trainer, so Seeds 0–2 are best read as repeated runs rather than controlled seeded runs. The current code passes both the training and split seeds to the trainer and records them in `run_config.json`.
 
 ## Data Layout
 
@@ -91,7 +91,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-To run the regression tests, install `pytest` and run `python -m pytest`. Tests use synthetic images and mocked YOLO calls.
+To run the regression tests, install `pytest` and run `python -m pytest`. Tests use synthetic images and mocked YOLO calls, and run automatically on GitHub Actions for every push.
 
 ### Train
 
@@ -118,7 +118,7 @@ outputs/test_<timestamp>/test_metrics.json
 outputs/test_<timestamp>/run_config.json
 ```
 
-Each invocation saves its converted dataset, configuration, and results in a separate run directory. Use `--run-dir` to choose a directory; existing nonempty directories are rejected. Evaluation uses `split="test"` and a confidence threshold of 0.001. These settings differ from the original report, whose scores have not been rerun.
+Each invocation saves its converted dataset, configuration, and results in a separate run directory. Use `--run-dir` to choose a directory; existing nonempty directories are rejected. Evaluation uses `split="test"` and a confidence threshold of 0.001. The reported scores above predate these settings and have not yet been reproduced with the current code.
 
 ## Repository Guide
 
