@@ -1,5 +1,7 @@
 # Thermal Image Anomaly Detection
 
+[![Tests](https://github.com/yunakinn/thermal-image-anomaly-detection/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/yunakinn/thermal-image-anomaly-detection/actions/workflows/tests.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A YOLOv8x pipeline for detecting normal and anomalous regions in thermal images.
 
 **Computer vision · Object detection · Ultralytics**
